@@ -15,15 +15,23 @@ MODELS=(${MODELS:-gcn gin gat})
 GRAPH_TYPES=(${GRAPH_TYPES:-statistical fully_connected})
 FOLDS=(${FOLDS:-1 2 3 4 5})
 EXTRA_ARGS=("$@")
+TRAIN_ARGS=()
+if [[ "${NO_PROGRESS:-1}" != "0" ]]; then
+  TRAIN_ARGS+=(--no-progress)
+fi
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "[$(ts)] ===== run_vast_teds_parallel start ====="
-if [[ -f "${SCRIPT_DIR}/setup_vast_teds.sh" ]]; then
-  bash "${SCRIPT_DIR}/setup_vast_teds.sh"
+if [[ "${SKIP_SETUP:-0}" == "1" ]]; then
+  echo "[$(ts)] skipping setup because SKIP_SETUP=1"
 else
-  bash "${REPO_DIR}/setup_vast_teds.sh"
+  if [[ -f "${SCRIPT_DIR}/setup_vast_teds.sh" ]]; then
+    bash "${SCRIPT_DIR}/setup_vast_teds.sh"
+  else
+    bash "${REPO_DIR}/setup_vast_teds.sh"
+  fi
 fi
 
 source "$CONDA_SH"
@@ -91,6 +99,7 @@ start_job() {
       --folds-to-run "$fold" \
       --output-dir "$out_dir" \
       --device cuda \
+      "${TRAIN_ARGS[@]}" \
       "${EXTRA_ARGS[@]}" \
       > "${out_dir}/train.log" 2>&1 &
 

@@ -37,6 +37,16 @@ Single job:
 TEDS_GDRIVE_FILE_ID=<file_id> bash run_vast_teds_job.sh gcn statistical 1
 ```
 
+Thirty single-job instances:
+
+```bash
+JOB_INDEX=<0..29> TEDS_GDRIVE_FILE_ID=<file_id> bash run_vast_teds_job.sh
+```
+
+`JOB_INDEX` order is `gcn`, `gin`, `gat` x `statistical`, `fully_connected` x folds `1..5`.
+Set `SKIP_SETUP=1` only on prepared images that already have the conda env, code, and dataset.
+Set `NO_PROGRESS=0` to restore tqdm progress bars; Vast runs default to `--no-progress`.
+
 Parallel jobs on one multi-GPU instance:
 
 ```bash
