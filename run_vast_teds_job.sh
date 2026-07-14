@@ -45,8 +45,9 @@ else
   exit 1
 fi
 EXTRA_ARGS=("$@")
+JOB_LABEL="${MODEL}_${GRAPH_TYPE}_fold${FOLD}"
 TRAIN_ARGS=()
-if [[ "${NO_PROGRESS:-1}" != "0" ]]; then
+if [[ "${NO_PROGRESS:-0}" == "1" ]]; then
   TRAIN_ARGS+=(--no-progress)
 fi
 
@@ -59,12 +60,33 @@ RESULTS_ROOT="${RESULTS_ROOT:-results_vast}"
 RCLONE_REMOTE="${RCLONE_REMOTE:-}"
 RCLONE_DEST_DIR="${RCLONE_DEST_DIR:-TEDS_GNN_reviewer_results}"
 RCLONE_B64_FILE="${RCLONE_B64_FILE:-/tmp/rclone_conf.b64}"
+DISCORD_BOT_NAME="${DISCORD_BOT_NAME:-TEDS GNN Bot}"
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NOTIFY_PY="${NOTIFY_PY:-${SCRIPT_DIR}/discord_notify.py}"
+
+notify() {
+  local msg="$1"
+  if [[ "${DISCORD_NOTIFY:-1}" == "0" ]]; then
+    return 0
+  fi
+  if [[ ! -f "$NOTIFY_PY" ]]; then
+    echo "[$(ts)] Discord notify skipped: helper not found at $NOTIFY_PY"
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 "$NOTIFY_PY" "$msg" "$DISCORD_BOT_NAME" || true
+  elif command -v python >/dev/null 2>&1; then
+    python "$NOTIFY_PY" "$msg" "$DISCORD_BOT_NAME" || true
+  else
+    echo "[$(ts)] Discord notify skipped: python not found"
+  fi
+}
 
 echo "[$(ts)] ===== run_vast_teds_job start ====="
 echo "[$(ts)] model=$MODEL graph_type=$GRAPH_TYPE fold=$FOLD"
+notify "[START] TEDS reviewer job started. job=${JOB_LABEL} host=$(hostname 2>/dev/null || echo unknown)"
 
 if [[ "${SKIP_SETUP:-0}" == "1" ]]; then
   echo "[$(ts)] skipping setup because SKIP_SETUP=1"
@@ -85,10 +107,11 @@ if [[ -n "${RCLONE_CONF_B64:-}" ]]; then
   base64 -d "$RCLONE_B64_FILE" > /root/.config/rclone/rclone.conf
 fi
 
-OUT_DIR="${RESULTS_ROOT}/${MODEL}_${GRAPH_TYPE}_fold${FOLD}"
+OUT_DIR="${RESULTS_ROOT}/${JOB_LABEL}"
 mkdir -p "$OUT_DIR"
 cd "$REPO_DIR"
 
+set +e
 python run_tensor_kfold.py \
   --backend pyg \
   --mode full \
@@ -100,16 +123,31 @@ python run_tensor_kfold.py \
   "${TRAIN_ARGS[@]}" \
   "${EXTRA_ARGS[@]}" \
   2>&1 | tee "${OUT_DIR}/train.log"
+TRAIN_RC=${PIPESTATUS[0]}
+set -e
+
+if [[ "$TRAIN_RC" -ne 0 ]]; then
+  notify "[FAIL] TEDS reviewer job failed. job=${JOB_LABEL} rc=${TRAIN_RC} out_dir=${OUT_DIR}"
+  exit "$TRAIN_RC"
+fi
 
 if [[ -n "$RCLONE_REMOTE" ]]; then
   echo "[$(ts)] uploading $OUT_DIR -> ${RCLONE_REMOTE}:${RCLONE_DEST_DIR}/${MODEL}_${GRAPH_TYPE}_fold${FOLD}"
-  rclone copy "$OUT_DIR" "${RCLONE_REMOTE}:${RCLONE_DEST_DIR}/${MODEL}_${GRAPH_TYPE}_fold${FOLD}" \
+  if rclone copy "$OUT_DIR" "${RCLONE_REMOTE}:${RCLONE_DEST_DIR}/${MODEL}_${GRAPH_TYPE}_fold${FOLD}" \
     --create-empty-src-dirs \
     --transfers 8 \
     --checkers 16 \
     --retries 3 \
     --low-level-retries 10 \
     --stats 10s
+  then
+    notify "[UPLOAD_OK] TEDS reviewer job uploaded. job=${JOB_LABEL} remote=${RCLONE_REMOTE}:${RCLONE_DEST_DIR}/${JOB_LABEL}"
+  else
+    UPLOAD_RC=$?
+    notify "[UPLOAD_FAIL] TEDS reviewer job upload failed. job=${JOB_LABEL} rc=${UPLOAD_RC} out_dir=${OUT_DIR}"
+    exit "$UPLOAD_RC"
+  fi
 fi
 
 echo "[$(ts)] job complete: $OUT_DIR"
+notify "[SUCCESS] TEDS reviewer job completed. job=${JOB_LABEL} out_dir=${OUT_DIR}"

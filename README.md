@@ -30,6 +30,8 @@ python run_tensor_kfold.py \
 ## Vast.ai
 
 Set `TEDS_GDRIVE_FILE_ID` for `TEDS_Discharge.csv`.
+Set `DISCORD_WEBHOOK_URL` to receive start, failure, upload, and completion notifications.
+Notifications are best-effort and do not fail the run if the webhook is missing or unreachable.
 
 Single job:
 
@@ -45,7 +47,9 @@ JOB_INDEX=<0..29> TEDS_GDRIVE_FILE_ID=<file_id> bash run_vast_teds_job.sh
 
 `JOB_INDEX` order is `gcn`, `gin`, `gat` x `statistical`, `fully_connected` x folds `1..5`.
 Set `SKIP_SETUP=1` only on prepared images that already have the conda env, code, and dataset.
-Set `NO_PROGRESS=0` to restore tqdm progress bars; Vast runs default to `--no-progress`.
+Progress bars are shown only for interactive terminals and are automatically omitted from `train.log`.
+Set `NO_PROGRESS=1` to disable tqdm even in an interactive terminal.
+Set `DISCORD_NOTIFY=0` to disable Discord notifications, or `DISCORD_BOT_NAME="..."` to change the bot name.
 
 Parallel jobs on one multi-GPU instance:
 
