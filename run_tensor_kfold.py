@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -521,7 +522,8 @@ def train_epoch(
     total_loss = torch.zeros((), device=device, dtype=torch.float64)
     total_samples = 0
     metrics = BinaryMetricAccumulator()
-    progress = tqdm(loader, desc=desc, leave=False, dynamic_ncols=True, disable=not show_progress)
+    progress_enabled = show_progress and sys.stderr.isatty()
+    progress = tqdm(loader, desc=desc, leave=False, dynamic_ncols=True, disable=not progress_enabled)
     for x_id, x_missing, y in progress:
         x_id = x_id.to(device, non_blocking=True)
         x_missing = x_missing.to(device, non_blocking=True)
@@ -537,7 +539,7 @@ def train_epoch(
         total_loss += loss.detach().double() * batch_size
         total_samples += batch_size
         metrics.update(logits.detach(), y)
-        if show_progress:
+        if progress_enabled:
             progress.set_postfix(loss=f"{(total_loss / max(1, total_samples)).item():.4f}")
     return float((total_loss / max(1, total_samples)).item()), metrics.compute()
 
@@ -557,7 +559,8 @@ def evaluate(
     total_samples = 0
     metrics = BinaryMetricAccumulator()
 
-    progress = tqdm(loader, desc=desc, leave=False, dynamic_ncols=True, disable=not show_progress)
+    progress_enabled = show_progress and sys.stderr.isatty()
+    progress = tqdm(loader, desc=desc, leave=False, dynamic_ncols=True, disable=not progress_enabled)
     for x_id, x_missing, y in progress:
         x_id = x_id.to(device, non_blocking=True)
         x_missing = x_missing.to(device, non_blocking=True)
@@ -570,7 +573,7 @@ def evaluate(
         total_loss += loss.detach().double() * batch_size
         total_samples += batch_size
         metrics.update_from_prediction(pred, logits, y)
-        if show_progress:
+        if progress_enabled:
             progress.set_postfix(loss=f"{(total_loss / max(1, total_samples)).item():.4f}")
 
     return float((total_loss / max(1, total_samples)).item()), metrics.compute()
