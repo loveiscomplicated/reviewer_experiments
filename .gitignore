@@ -1,0 +1,29 @@
+__pycache__/
+*.py[cod]
+
+# Local data
+TEDS_Discharge.csv
+*.csv.gz
+*.tgz
+*.tar.gz
+
+# Experiment outputs
+results/
+results_*/
+results-vast/
+results_vast/
+results_vast_merged/
+
+# Logs/checkpoints
+*.log
+*.pt
+*.pth
+checkpoints/
+model/
+model_pt/
+
+# Local/editor state
+.DS_Store
+.env
+.venv/
+venv/
