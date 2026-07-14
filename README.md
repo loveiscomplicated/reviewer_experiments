@@ -49,6 +49,7 @@ JOB_INDEX=<0..29> TEDS_GDRIVE_FILE_ID=<file_id> bash run_vast_teds_job.sh
 Set `SKIP_SETUP=1` only on prepared images that already have the conda env, code, and dataset.
 Progress bars are shown only for interactive terminals and are automatically omitted from `train.log`.
 Set `NO_PROGRESS=1` to disable tqdm even in an interactive terminal.
+Vast scripts default to `PRELOAD_DEVICE=cuda`, which preloads fold tensors into GPU memory; set `PRELOAD_DEVICE=none` to disable it.
 Set `DISCORD_NOTIFY=0` to disable Discord notifications, or `DISCORD_BOT_NAME="..."` to change the bot name.
 
 Parallel jobs on one multi-GPU instance:

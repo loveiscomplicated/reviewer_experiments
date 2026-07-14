@@ -50,6 +50,7 @@ TRAIN_ARGS=()
 if [[ "${NO_PROGRESS:-0}" == "1" ]]; then
   TRAIN_ARGS+=(--no-progress)
 fi
+PRELOAD_DEVICE="${PRELOAD_DEVICE:-cuda}"
 
 WORKSPACE_ROOT="${WORKSPACE_ROOT:-/workspace}"
 REPO_DIR="${REPO_DIR:-${WORKSPACE_ROOT}/reviewer_experiments}"
@@ -120,6 +121,7 @@ python run_tensor_kfold.py \
   --folds-to-run "$FOLD" \
   --output-dir "$OUT_DIR" \
   --device cuda \
+  --preload-device "$PRELOAD_DEVICE" \
   "${TRAIN_ARGS[@]}" \
   "${EXTRA_ARGS[@]}" \
   2>&1 | tee "${OUT_DIR}/train.log"

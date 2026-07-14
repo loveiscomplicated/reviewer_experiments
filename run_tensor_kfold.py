@@ -100,6 +100,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scheduler-min-lr", type=float, default=1e-6)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--no-progress", action="store_true", help="Disable tqdm batch progress bars.")
+    parser.add_argument(
+        "--preload-device",
+        choices=("none", "cuda"),
+        default="none",
+        help="Move split tensors to GPU before DataLoader iteration to reduce per-batch host transfers.",
+    )
     parser.add_argument("--estimate-max-train", type=int, default=50_000)
     parser.add_argument("--estimate-max-val", type=int, default=10_000)
     parser.add_argument("--estimate-max-test", type=int, default=10_000)
@@ -284,6 +290,16 @@ def run_one_configuration(
         max_epochs = args.estimate_epochs
     else:
         max_epochs = args.max_epochs
+
+    if args.preload_device != "none":
+        if args.num_workers != 0:
+            raise ValueError("--preload-device requires --num-workers 0.")
+        if args.preload_device == "cuda":
+            if device.type != "cuda":
+                raise ValueError("--preload-device cuda requires --device cuda/auto with CUDA available.")
+            train_split = move_split_to_device(train_split, device)
+            val_split = move_split_to_device(val_split, device)
+            test_split = move_split_to_device(test_split, device)
 
     train_loader = make_loader(train_split, args.batch_size, shuffle=True, args=args)
     val_loader = make_loader(val_split, args.batch_size, shuffle=False, args=args)
@@ -485,12 +501,21 @@ def select_splits_and_graph(
 
 def make_loader(split: TensorSplit, batch_size: int, shuffle: bool, args: argparse.Namespace) -> DataLoader:
     dataset = TensorDataset(split.x_id, split.x_missing, split.y)
+    pin_memory = torch.cuda.is_available() and split.x_id.device.type == "cpu"
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=args.num_workers,
-        pin_memory=torch.cuda.is_available(),
+        pin_memory=pin_memory,
+    )
+
+
+def move_split_to_device(split: TensorSplit, device: torch.device) -> TensorSplit:
+    return TensorSplit(
+        x_id=split.x_id.to(device, non_blocking=True),
+        x_missing=split.x_missing.to(device, non_blocking=True),
+        y=split.y.to(device, non_blocking=True),
     )
 
 

@@ -20,6 +20,7 @@ TRAIN_ARGS=()
 if [[ "${NO_PROGRESS:-0}" == "1" ]]; then
   TRAIN_ARGS+=(--no-progress)
 fi
+PRELOAD_DEVICE="${PRELOAD_DEVICE:-cuda}"
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -122,6 +123,7 @@ start_job() {
       --folds-to-run "$fold" \
       --output-dir "$out_dir" \
       --device cuda \
+      --preload-device "$PRELOAD_DEVICE" \
       "${TRAIN_ARGS[@]}" \
       "${EXTRA_ARGS[@]}" \
       > "${out_dir}/train.log" 2>&1 &
