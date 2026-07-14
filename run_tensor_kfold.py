@@ -320,6 +320,7 @@ def run_one_configuration(
     start_time = time.perf_counter()
 
     for epoch in range(1, max_epochs + 1):
+        epoch_start = time.perf_counter()
         train_loss, train_metrics = train_epoch(
             model,
             train_loader,
@@ -339,6 +340,8 @@ def run_one_configuration(
             desc=f"fold {fold_data.fold} {model_name}/{graph_type} epoch {epoch} val",
             show_progress=not args.no_progress,
         )
+        epoch_seconds = time.perf_counter() - epoch_start
+        epoch_samples = len(train_split.y) + len(val_split.y)
         scheduler.step(val_loss)
 
         improved = val_loss < best_val_loss - 1e-8
@@ -369,6 +372,8 @@ def run_one_configuration(
             "val_f1": val_metrics["f1"],
             "val_auc": val_metrics["auc"],
             "lr": optimizer.param_groups[0]["lr"],
+            "epoch_seconds": epoch_seconds,
+            "samples_per_second": epoch_samples / epoch_seconds if epoch_seconds > 0 else float("nan"),
         }
         epoch_rows.append(row)
         print(
@@ -378,7 +383,8 @@ def run_one_configuration(
             f"F1={train_metrics['f1']:.4f} AUC={format_metric(train_metrics['auc'])} | "
             f"val_loss={val_loss:.4f} acc={val_metrics['accuracy']:.4f} "
             f"P={val_metrics['precision']:.4f} R={val_metrics['recall']:.4f} "
-            f"F1={val_metrics['f1']:.4f} AUC={format_metric(val_metrics['auc'])}"
+            f"F1={val_metrics['f1']:.4f} AUC={format_metric(val_metrics['auc'])} | "
+            f"{epoch_seconds:.1f}s {row['samples_per_second']:.1f} samples/s"
         )
 
         if stale_epochs >= patience:
@@ -512,7 +518,7 @@ def train_epoch(
     show_progress: bool,
 ) -> Tuple[float, Dict[str, float]]:
     model.train()
-    total_loss = 0.0
+    total_loss = torch.zeros((), device=device, dtype=torch.float64)
     total_samples = 0
     metrics = BinaryMetricAccumulator()
     progress = tqdm(loader, desc=desc, leave=False, dynamic_ncols=True, disable=not show_progress)
@@ -528,11 +534,12 @@ def train_epoch(
         optimizer.step()
 
         batch_size = y.size(0)
-        total_loss += loss.item() * batch_size
+        total_loss += loss.detach().double() * batch_size
         total_samples += batch_size
         metrics.update(logits.detach(), y)
-        progress.set_postfix(loss=f"{total_loss / max(1, total_samples):.4f}")
-    return total_loss / max(1, total_samples), metrics.compute()
+        if show_progress:
+            progress.set_postfix(loss=f"{(total_loss / max(1, total_samples)).item():.4f}")
+    return float((total_loss / max(1, total_samples)).item()), metrics.compute()
 
 
 @torch.no_grad()
@@ -546,7 +553,7 @@ def evaluate(
     show_progress: bool,
 ) -> Tuple[float, Dict[str, float]]:
     model.eval()
-    total_loss = 0.0
+    total_loss = torch.zeros((), device=device, dtype=torch.float64)
     total_samples = 0
     metrics = BinaryMetricAccumulator()
 
@@ -560,48 +567,58 @@ def evaluate(
         pred = logits.argmax(dim=1)
 
         batch_size = y.size(0)
-        total_loss += loss.item() * batch_size
+        total_loss += loss.detach().double() * batch_size
         total_samples += batch_size
         metrics.update_from_prediction(pred, logits, y)
-        progress.set_postfix(loss=f"{total_loss / max(1, total_samples):.4f}")
+        if show_progress:
+            progress.set_postfix(loss=f"{(total_loss / max(1, total_samples)).item():.4f}")
 
-    return total_loss / max(1, total_samples), metrics.compute()
+    return float((total_loss / max(1, total_samples)).item()), metrics.compute()
 
 
 class BinaryMetricAccumulator:
     def __init__(self) -> None:
-        self.tp = 0
-        self.fp = 0
-        self.tn = 0
-        self.fn = 0
-        self.y_true_parts: List[np.ndarray] = []
-        self.y_score_parts: List[np.ndarray] = []
+        self.y_true_parts: List[torch.Tensor] = []
+        self.y_score_parts: List[torch.Tensor] = []
+        self.pred_parts: List[torch.Tensor] = []
 
     def update(self, logits: torch.Tensor, y: torch.Tensor) -> None:
         pred = logits.argmax(dim=1)
         self.update_from_prediction(pred, logits, y)
 
     def update_from_prediction(self, pred: torch.Tensor, logits: torch.Tensor, y: torch.Tensor) -> None:
-        self.tp += int(((pred == 1) & (y == 1)).sum().item())
-        self.fp += int(((pred == 1) & (y == 0)).sum().item())
-        self.tn += int(((pred == 0) & (y == 0)).sum().item())
-        self.fn += int(((pred == 0) & (y == 1)).sum().item())
-        prob_pos = torch.softmax(logits, dim=1)[:, 1]
-        self.y_true_parts.append(y.detach().cpu().numpy())
-        self.y_score_parts.append(prob_pos.detach().cpu().numpy())
+        prob_pos = torch.softmax(logits.detach(), dim=1)[:, 1]
+        self.pred_parts.append(pred.detach())
+        self.y_true_parts.append(y.detach())
+        self.y_score_parts.append(prob_pos)
 
     def compute(self) -> Dict[str, float]:
-        total = self.tp + self.fp + self.tn + self.fn
-        accuracy = (self.tp + self.tn) / total if total else 0.0
-        precision = self.tp / (self.tp + self.fp) if (self.tp + self.fp) else 0.0
-        recall = self.tp / (self.tp + self.fn) if (self.tp + self.fn) else 0.0
+        if not self.y_true_parts:
+            return {
+                "accuracy": 0.0,
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "auc": float("nan"),
+            }
+
+        y_true = torch.cat(self.y_true_parts).cpu().numpy()
+        pred = torch.cat(self.pred_parts).cpu().numpy()
+        y_score = torch.cat(self.y_score_parts).cpu().numpy()
+
+        tp = int(((pred == 1) & (y_true == 1)).sum())
+        fp = int(((pred == 1) & (y_true == 0)).sum())
+        tn = int(((pred == 0) & (y_true == 0)).sum())
+        fn = int(((pred == 0) & (y_true == 1)).sum())
+
+        total = tp + fp + tn + fn
+        accuracy = (tp + tn) / total if total else 0.0
+        precision = tp / (tp + fp) if (tp + fp) else 0.0
+        recall = tp / (tp + fn) if (tp + fn) else 0.0
         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
         auc = float("nan")
-        if self.y_true_parts:
-            y_true = np.concatenate(self.y_true_parts)
-            y_score = np.concatenate(self.y_score_parts)
-            if np.unique(y_true).size == 2:
-                auc = float(roc_auc_score(y_true, y_score))
+        if np.unique(y_true).size == 2:
+            auc = float(roc_auc_score(y_true, y_score))
         return {
             "accuracy": float(accuracy),
             "precision": float(precision),
