@@ -32,6 +32,7 @@ python run_tensor_kfold.py \
 Set `TEDS_GDRIVE_FILE_ID` for `TEDS_Discharge.csv`.
 Set `DISCORD_WEBHOOK_URL` to receive start, failure, upload, and completion notifications.
 Notifications are best-effort and do not fail the run if the webhook is missing or unreachable.
+Result upload is disabled by default; set `UPLOAD_RESULTS=1` with `RCLONE_REMOTE` to enable rclone uploads.
 
 Single job:
 
@@ -57,6 +58,18 @@ Parallel jobs on one multi-GPU instance:
 ```bash
 TEDS_GDRIVE_FILE_ID=<file_id> bash run_vast_teds_parallel.sh
 ```
+
+Parallel range on one multi-GPU instance:
+
+```bash
+JOB_INDEX_RANGE=0-9 TEDS_GDRIVE_FILE_ID=<file_id> bash run_vast_teds_parallel.sh --batch-size 1024
+```
+
+`JOB_INDEX_RANGE` accepts `0-9`, `0..9`, or `0:9`.
+For non-contiguous selections, use `JOB_INDEXES='0 1 2 10-14'`.
+Range mode auto-detects GPU count and schedules selected jobs across GPUs.
+If `UPLOAD_RESULTS=1` and `RCLONE_REMOTE` is set, raw selected results upload to `${RCLONE_DEST_DIR}/raw`, and partial merged summaries upload to `${RCLONE_DEST_DIR}/merged_ranges/<range>`.
+Set `UPLOAD_RAW_RESULTS=0` to skip raw result upload in range mode.
 
 Aggregate sharded results:
 

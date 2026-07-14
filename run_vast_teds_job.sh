@@ -62,6 +62,7 @@ RCLONE_REMOTE="${RCLONE_REMOTE:-}"
 RCLONE_DEST_DIR="${RCLONE_DEST_DIR:-TEDS_GNN_reviewer_results}"
 RCLONE_B64_FILE="${RCLONE_B64_FILE:-/tmp/rclone_conf.b64}"
 DISCORD_BOT_NAME="${DISCORD_BOT_NAME:-TEDS GNN Bot}"
+UPLOAD_RESULTS="${UPLOAD_RESULTS:-0}"
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -133,7 +134,7 @@ if [[ "$TRAIN_RC" -ne 0 ]]; then
   exit "$TRAIN_RC"
 fi
 
-if [[ -n "$RCLONE_REMOTE" ]]; then
+if [[ "$UPLOAD_RESULTS" == "1" && -n "$RCLONE_REMOTE" ]]; then
   echo "[$(ts)] uploading $OUT_DIR -> ${RCLONE_REMOTE}:${RCLONE_DEST_DIR}/${MODEL}_${GRAPH_TYPE}_fold${FOLD}"
   if rclone copy "$OUT_DIR" "${RCLONE_REMOTE}:${RCLONE_DEST_DIR}/${MODEL}_${GRAPH_TYPE}_fold${FOLD}" \
     --create-empty-src-dirs \
@@ -149,6 +150,10 @@ if [[ -n "$RCLONE_REMOTE" ]]; then
     notify "[UPLOAD_FAIL] TEDS reviewer job upload failed. job=${JOB_LABEL} rc=${UPLOAD_RC} out_dir=${OUT_DIR}"
     exit "$UPLOAD_RC"
   fi
+elif [[ "$UPLOAD_RESULTS" == "1" ]]; then
+  echo "[$(ts)] upload requested but RCLONE_REMOTE is empty; skipping upload"
+else
+  echo "[$(ts)] upload disabled (set UPLOAD_RESULTS=1 to enable rclone upload)"
 fi
 
 echo "[$(ts)] job complete: $OUT_DIR"
