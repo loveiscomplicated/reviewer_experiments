@@ -72,6 +72,11 @@ TEMPORAL_NODE_COLUMNS: List[str] = [
     col for col in FEATURE_COLUMNS if col not in set(TEMPORAL_DYNAMIC_PAIRS.values())
 ]
 
+STATE_GENERALIZATION_SD_MULTIPLIERS: Dict[str, float] = {
+    "scenario01": 1.0,
+    "scenario02": 2.0,
+}
+
 
 @dataclass(frozen=True)
 class TensorSplit:
@@ -95,6 +100,32 @@ class FoldTensors:
     temporal_cat_dims: Optional[List[int]] = None
     temporal_adjacency: Optional[Dict[str, torch.Tensor]] = None
     temporal_edge_audit: Optional[Dict[str, pd.DataFrame]] = None
+
+
+@dataclass(frozen=True)
+class StateMissingnessScenario:
+    name: str
+    sd_multiplier: float
+    mean_missingness: float
+    sd_missingness: float
+    threshold: float
+    partial_states: Tuple[int, ...]
+    comprehensive_states: Tuple[int, ...]
+    partial_episodes: int
+    total_episodes: int
+
+
+@dataclass(frozen=True)
+class StateGeneralizationTensors:
+    scenario: str
+    fold: int
+    train: TensorSplit
+    val: TensorSplit
+    comprehensive_test: TensorSplit
+    partial_test: TensorSplit
+    cat_dims: List[int]
+    adjacency: Dict[str, torch.Tensor]
+    edge_audit: Dict[str, pd.DataFrame]
 
 
 def load_teds_main(csv_path: str | Path, max_rows: Optional[int] = None, seed: int = 42) -> pd.DataFrame:
@@ -137,6 +168,152 @@ def iter_fold_indices(
             stratify=y[train_val_idx],
         )
         yield fold, np.sort(train_idx), np.sort(val_idx), np.sort(test_idx)
+
+
+def compute_state_missingness(
+    df: pd.DataFrame,
+    columns: Sequence[str] = FEATURE_COLUMNS,
+) -> pd.DataFrame:
+    row_missingness = (df[list(columns)] == MISSING_CODE).mean(axis=1)
+    state_df = pd.DataFrame(
+        {
+            "STFIPS": df["STFIPS"].to_numpy(),
+            "row_missingness": row_missingness.to_numpy(dtype=np.float64),
+        }
+    )
+    return (
+        state_df.groupby("STFIPS", as_index=False)
+        .agg(missing_rate=("row_missingness", "mean"), episodes=("row_missingness", "size"))
+        .sort_values(["missing_rate", "STFIPS"], ascending=[False, True])
+        .reset_index(drop=True)
+    )
+
+
+def build_state_missingness_scenarios(
+    df: pd.DataFrame,
+    sd_ddof: int = 0,
+) -> Tuple[pd.DataFrame, Dict[str, StateMissingnessScenario]]:
+    state_missingness = compute_state_missingness(df)
+    mean_missingness = float(state_missingness["missing_rate"].mean())
+    sd_missingness = float(state_missingness["missing_rate"].std(ddof=sd_ddof))
+    total_episodes = int(state_missingness["episodes"].sum())
+    all_states = tuple(int(state) for state in sorted(state_missingness["STFIPS"].tolist()))
+
+    scenarios: Dict[str, StateMissingnessScenario] = {}
+    for name, sd_multiplier in STATE_GENERALIZATION_SD_MULTIPLIERS.items():
+        threshold = mean_missingness + sd_multiplier * sd_missingness
+        partial_df = state_missingness[state_missingness["missing_rate"] >= threshold]
+        partial_states = tuple(int(state) for state in sorted(partial_df["STFIPS"].tolist()))
+        partial_set = set(partial_states)
+        comprehensive_states = tuple(state for state in all_states if state not in partial_set)
+        scenarios[name] = StateMissingnessScenario(
+            name=name,
+            sd_multiplier=sd_multiplier,
+            mean_missingness=mean_missingness,
+            sd_missingness=sd_missingness,
+            threshold=float(threshold),
+            partial_states=partial_states,
+            comprehensive_states=comprehensive_states,
+            partial_episodes=int(partial_df["episodes"].sum()),
+            total_episodes=total_episodes,
+        )
+    return state_missingness, scenarios
+
+
+def iter_state_generalization_indices(
+    df: pd.DataFrame,
+    partial_states: Sequence[int],
+    n_splits: int = 5,
+    seed: int = 42,
+    val_fraction_within_trainval: float = 0.15,
+) -> Iterable[Tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+    partial_mask = df["STFIPS"].isin(set(partial_states)).to_numpy()
+    comprehensive_idx = np.flatnonzero(~partial_mask)
+    partial_idx = np.flatnonzero(partial_mask)
+    if len(partial_idx) == 0:
+        raise ValueError("No partial-reporting rows selected for state-generalization.")
+    if len(comprehensive_idx) == 0:
+        raise ValueError("No comprehensive-reporting rows remain for state-generalization.")
+
+    y = df[LABEL_COLUMN].to_numpy()
+    y_comprehensive = y[comprehensive_idx]
+    outer = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    for fold, (train_val_pos, comprehensive_test_pos) in enumerate(
+        outer.split(comprehensive_idx, y_comprehensive),
+        start=1,
+    ):
+        train_val_idx = comprehensive_idx[train_val_pos]
+        comprehensive_test_idx = comprehensive_idx[comprehensive_test_pos]
+        train_idx, val_idx = train_test_split(
+            train_val_idx,
+            test_size=val_fraction_within_trainval,
+            random_state=seed + fold,
+            stratify=y[train_val_idx],
+        )
+        yield (
+            fold,
+            np.sort(train_idx),
+            np.sort(val_idx),
+            np.sort(comprehensive_test_idx),
+            np.sort(partial_idx),
+        )
+
+
+def build_state_generalization_tensors(
+    df: pd.DataFrame,
+    scenario: str,
+    fold: int,
+    train_idx: Sequence[int],
+    val_idx: Sequence[int],
+    comprehensive_test_idx: Sequence[int],
+    partial_test_idx: Sequence[int],
+    graph_types: Sequence[str],
+) -> StateGeneralizationTensors:
+    train_raw = df.iloc[list(train_idx)][FEATURE_COLUMNS].copy()
+    val_raw = df.iloc[list(val_idx)][FEATURE_COLUMNS].copy()
+    comprehensive_test_raw = df.iloc[list(comprehensive_test_idx)][FEATURE_COLUMNS].copy()
+    partial_test_raw = df.iloc[list(partial_test_idx)][FEATURE_COLUMNS].copy()
+
+    (
+        train_filled,
+        split_filled,
+        train_flags,
+        split_flags,
+    ) = _fit_impute_and_flags_many(
+        train_raw,
+        [val_raw, comprehensive_test_raw, partial_test_raw],
+        FEATURE_COLUMNS,
+    )
+    val_filled, comprehensive_test_filled, partial_test_filled = split_filled
+    val_flags, comprehensive_test_flags, partial_test_flags = split_flags
+
+    vocabs = _fit_vocabs(train_filled, FEATURE_COLUMNS)
+    cat_dims = [len(vocabs[col]) + 1 for col in FEATURE_COLUMNS]
+    adjacency, audits = build_adjacencies(train_filled, FEATURE_COLUMNS, VAR_TYPES, graph_types)
+
+    return StateGeneralizationTensors(
+        scenario=scenario,
+        fold=fold,
+        train=_make_split(train_filled, train_flags, df.iloc[list(train_idx)][LABEL_COLUMN], FEATURE_COLUMNS, vocabs),
+        val=_make_split(val_filled, val_flags, df.iloc[list(val_idx)][LABEL_COLUMN], FEATURE_COLUMNS, vocabs),
+        comprehensive_test=_make_split(
+            comprehensive_test_filled,
+            comprehensive_test_flags,
+            df.iloc[list(comprehensive_test_idx)][LABEL_COLUMN],
+            FEATURE_COLUMNS,
+            vocabs,
+        ),
+        partial_test=_make_split(
+            partial_test_filled,
+            partial_test_flags,
+            df.iloc[list(partial_test_idx)][LABEL_COLUMN],
+            FEATURE_COLUMNS,
+            vocabs,
+        ),
+        cat_dims=cat_dims,
+        adjacency=adjacency,
+        edge_audit=audits,
+    )
 
 
 def build_fold_tensors(
@@ -352,6 +529,28 @@ def _fit_impute_and_flags(
         return out
 
     return fill(train_raw), fill(val_raw), fill(test_raw), train_flags, val_flags, test_flags
+
+
+def _fit_impute_and_flags_many(
+    train_raw: pd.DataFrame,
+    split_raws: Sequence[pd.DataFrame],
+    columns: Sequence[str],
+) -> Tuple[pd.DataFrame, List[pd.DataFrame], pd.DataFrame, List[pd.DataFrame]]:
+    train_flags = (train_raw[columns] == MISSING_CODE).astype(np.float32)
+    split_flags = [(split_raw[columns] == MISSING_CODE).astype(np.float32) for split_raw in split_raws]
+
+    fill_values = {}
+    for col in columns:
+        nonmissing = train_raw.loc[train_raw[col] != MISSING_CODE, col]
+        fill_values[col] = nonmissing.mode(dropna=True).iloc[0] if not nonmissing.empty else MISSING_CODE
+
+    def fill(df: pd.DataFrame) -> pd.DataFrame:
+        out = df[columns].copy()
+        for col, value in fill_values.items():
+            out.loc[out[col] == MISSING_CODE, col] = value
+        return out
+
+    return fill(train_raw), [fill(split_raw) for split_raw in split_raws], train_flags, split_flags
 
 
 def _fit_vocabs(df: pd.DataFrame, columns: Sequence[str]) -> Dict[str, Dict[object, int]]:

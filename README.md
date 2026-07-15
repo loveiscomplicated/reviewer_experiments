@@ -80,3 +80,38 @@ python aggregate_vast_results.py \
 ```
 
 The final reviewer table is `results_vast_merged/summary_mean_sd.csv`.
+
+## State-generalization rerun for Table 3
+
+This reruns Table 3 with the reviewer experiment preprocessing and hyperparameters.
+It includes `GCN`, `GIN`, and `GAT`; `T-GCN` is intentionally excluded from this
+state-generalization analysis.
+
+Local smoke:
+
+```bash
+python run_state_generalization.py \
+  --backend dense \
+  --mode full \
+  --max-rows 5000 \
+  --max-epochs 1 \
+  --models gcn \
+  --scenarios scenario01 \
+  --graph-types statistical \
+  --folds-to-run 1 \
+  --device cpu
+```
+
+Full Vast.ai run:
+
+```bash
+SCENARIOS="scenario01 scenario02" \
+MODELS="gcn gin gat" \
+GRAPH_TYPES="statistical" \
+FOLDS="1 2 3 4 5" \
+bash run_vast_teds_state_generalization_parallel.sh --batch-size 1024
+```
+
+The state-generalization matrix order is `scenario01`, `scenario02` x `gcn`,
+`gin`, `gat` x `statistical` x folds `1..5`. The final Table 3 candidate is
+`results_state_generalization_vast_merged/summary_mean_sd.csv`.
